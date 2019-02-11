@@ -49,7 +49,7 @@ namespace WorldFactbookIndexer
         const String EveryHour = "0 2 * * * *";         // every hour on the hour
 
         [FunctionName("Update_TimerStart")]
-        public static async Task Update_TimerStart([TimerTrigger(EveryHour)]TimerInfo timerInfo,
+        public static async Task Update_TimerStart([TimerTrigger(EverySaturday)]TimerInfo timerInfo,
             [OrchestrationClient] DurableOrchestrationClient starter, ILogger log)
         {
             string instanceId = await starter.StartNewAsync("Update", null);
