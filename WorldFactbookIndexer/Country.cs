@@ -37,7 +37,7 @@ namespace WorldFactbookIndexer
             return new Country[]
             {
                 new Country("xx", "World"),
-                                new Country("af", "Afghanistan"),
+                new Country("af", "Afghanistan"),
                 new Country("ax", "Akrotiri"),
                 new Country("al", "Albania"),
                 new Country("ag", "Algeria"),

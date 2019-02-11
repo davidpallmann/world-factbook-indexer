@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.Azure.Documents;
 using Microsoft.Azure.Documents.Client;
 using Microsoft.Azure.WebJobs;
+using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Extensions.Logging;
 using PolyCloud.Storage.NetCore;
 using Newtonsoft.Json.Linq;
@@ -33,10 +34,11 @@ namespace WorldFactbookIndexer
         private const string EndpointUrl = "https://your-cosmo-db.documents.azure.com:443/";
         private const string PrimaryKey = "...your-cosmo-db-access-key...";
         private static DocumentClient client = new DocumentClient(new Uri(EndpointUrl), PrimaryKey);
-        private static Uri countryUrl = UriFactory.CreateDocumentCollectionUri("Factbook", "Country");
+        private static Uri CountryUrl = UriFactory.CreateDocumentCollectionUri("Factbook", "Country");
 
         // Global variables
 
+        private static bool LocalTest = false;                  // If true, we are running locally. If false, we're running in the cloud.
         private static JObject data = null;                     // JSON country data
         private static Country[] countries = Country.List();    // Master country list
 
@@ -56,21 +58,23 @@ namespace WorldFactbookIndexer
             log.LogInformation($"================ Started orchestration with ID = '{instanceId}'. at " + DateTime.Now.ToString());
         }
 
+#if DEPRECATED
         // Start function for HTTP trigger - used during initial development & running locally to debug
 
-        //[FunctionName("Update_HttpStart")]
-        //public static async Task<HttpResponseMessage> HttpStart(
-        //    [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")]HttpRequestMessage req,
-        //    [OrchestrationClient]DurableOrchestrationClient starter,
-        //    ILogger log)
-        //{
-        //    // Function input comes from the request content.
-        //    string instanceId = await starter.StartNewAsync("Update", null);
+        [FunctionName("Update_HttpStart")]
+        public static async Task<HttpResponseMessage> HttpStart(
+            [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")]HttpRequestMessage req,
+            [OrchestrationClient]DurableOrchestrationClient starter,
+            ILogger log)
+        {
+            // Function input comes from the request content.
+            string instanceId = await starter.StartNewAsync("Update", null);
 
-        //    log.LogInformation($"Started orchestration with ID = '{instanceId}'.");
+            log.LogInformation($"Started orchestration with ID = '{instanceId}'.");
 
-        //    return starter.CreateCheckStatusResponse(req, instanceId);
-        //}
+            return starter.CreateCheckStatusResponse(req, instanceId);
+        }
+#endif
 
         #endregion
 
@@ -123,19 +127,21 @@ namespace WorldFactbookIndexer
             {
                 // Download factbook.json
 
-                log.LogInformation("Downloading data from World Factbook github");
-
                 String filename = "factbook.json";
 
-                using (WebClient web = new WebClient())
+                if (!LocalTest || !File.Exists(filename))
                 {
-                    web.DownloadFile(DownloadUrl, filename);
+                    log.LogInformation("Downloading data from World Factbook github");
+                    using (WebClient web = new WebClient())
+                    {
+                        web.DownloadFile(DownloadUrl, filename);
+                    }
                 }
                 String json = File.ReadAllText(filename);
                 data = JObject.Parse(json);
 
-                DeleteTempFile(filename);
-                
+                if (!LocalTest) DeleteTempFile(filename);
+
                 log.LogInformation("End function DownloadData (success)");
                 return true;
             }
@@ -146,7 +152,7 @@ namespace WorldFactbookIndexer
             }
         }
 
-        #endregion
+#endregion
 
         #region UploadCountryData
 
@@ -163,6 +169,16 @@ namespace WorldFactbookIndexer
             try
             {
                 token = data["countries"][country.Key]["data"];
+
+                // Add properties to the Country JSON. 
+                //   source: The Cosmos DB County collection uses /source as the partition key. 
+                //   timestamp: timestamp when this data was collected.
+                //   key: country key
+
+                token["name"].Parent.AddAfterSelf(new JProperty("source", "Factbook"));
+                token["name"].Parent.AddAfterSelf(new JProperty("timestamp", DateTime.UtcNow.ToString("U")));
+                token["name"].Parent.AddAfterSelf(new JProperty("key", country.Key));
+
                 json = token.ToString();
             }
             catch (Exception ex)
@@ -172,7 +188,7 @@ namespace WorldFactbookIndexer
                 return false;
             }
 
-            PartitionKey parkey = new PartitionKey(country.Name);
+            PartitionKey parkey = new PartitionKey("Factbook");
 
             if (!UploadCountryData_UploadJson(log, country, json)) return false;
             if (!await UploadCountryData_DeletePriorRecords(log, country, parkey)) return false;
@@ -230,7 +246,7 @@ namespace WorldFactbookIndexer
 
             var query = new SqlQuerySpec("SELECT * FROM Country c WHERE c.name = @name",
                            new SqlParameterCollection(new SqlParameter[] { new SqlParameter { Name = "@name", Value = country.Name } }));
-            var existingCountryRecords = client.CreateDocumentQuery<Microsoft.Azure.Documents.Document>(countryUrl, query, new FeedOptions() { PartitionKey = parkey });
+            var existingCountryRecords = client.CreateDocumentQuery<Microsoft.Azure.Documents.Document>(CountryUrl, query, new FeedOptions() { PartitionKey = parkey });
 
             bool queryDone = false;
             int tries = 0;
@@ -251,7 +267,6 @@ namespace WorldFactbookIndexer
                         {
                             foreach (Microsoft.Azure.Documents.Document c in existingCountryRecords)
                             {
-                                //log.LogInformation("     Deleting found document SelfLink: " + c.SelfLink + ", country: " + c.GetPropertyValue<String>("name"));
                                 await client.DeleteDocumentAsync(c.SelfLink, options);
                                 count++;
                             }
@@ -318,19 +333,13 @@ namespace WorldFactbookIndexer
                 try
                 {
                     log.LogInformation("---- " + country.Key + ": adding database record");
-                    // UriFactory.CreateDocumentCollectionUri("Factbook", "Country")
-                    Document doc = await client.CreateDocumentAsync(countryUrl, token, new RequestOptions() { PartitionKey = parkey });
+                    Document doc = await client.CreateDocumentAsync(CountryUrl, token, new RequestOptions() { PartitionKey = parkey });
                     log.LogInformation("Country record " + country.Key + " created");
                     queryDone = true;
                 }
                 catch (DocumentClientException de)
                 {
                     var statusCode = (int)de.StatusCode;
-                    //if ((statusCode == 409 && tries < 3)
-                    //{
-                    //    log.LogInformation(">>>> Error 429/503(de): " + country.Key + " : DOCUMENT EXISTS - TRYING UPDATE <<<<");
-                    //    client.ReplaceDocumentAsync(countryUrl, )
-                    //}
                     if ((statusCode == 429 || statusCode == 503) && tries < 3)
                     {
                         log.LogInformation(">>>> Error 429/503(de): " + country.Key + " : RETRYING ADD AFTER SLEEP <<<<");
