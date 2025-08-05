@@ -1,17 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>netcoreapp2.1</TargetFramework>
     <AzureFunctionsVersion>v2</AzureFunctionsVersion>
+    <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="Microsoft.Azure.DocumentDB.Core" Version="2.2.2" />
-    <PackageReference Include="Microsoft.Azure.DurableTask.AzureStorage" Version="1.4.2" />
-    <PackageReference Include="Microsoft.Azure.DurableTask.Core" Version="2.0.11" />
-    <PackageReference Include="Microsoft.Azure.Storage.Blob" Version="9.4.2" />
-    <PackageReference Include="Microsoft.Azure.Storage.Common" Version="9.4.2" />
-    <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.DurableTask" Version="1.7.1" />
-    <PackageReference Include="Microsoft.NET.Sdk.Functions" Version="1.0.24" />
-  </ItemGroup>
   <ItemGroup>
     <Reference Include="PolyCloud.Storage.NetCore">
       <HintPath>..\..\polycloud-storage-netcore\PolyCloud.Storage.NetCore\bin\Release\netcoreapp2.1\PolyCloud.Storage.NetCore.dll</HintPath>
@@ -25,5 +16,14 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>Never</CopyToPublishDirectory>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Azure.DocumentDB.Core" Version="2.21.0" />
+    <PackageReference Include="Microsoft.Azure.DurableTask.AzureStorage" Version="2.0.0" />
+    <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.DurableTask" Version="2.13.7" />
+    <PackageReference Include="Microsoft.Azure.Storage.Common" Version="11.2.3" />
+    <PackageReference Include="Microsoft.Azure.DurableTask.Core" Version="3.0.0" />
+    <PackageReference Include="Microsoft.NET.Sdk.Functions" Version="4.6.0" />
+    <PackageReference Include="Microsoft.Azure.Storage.Blob" Version="11.2.3" />
   </ItemGroup>
 </Project>

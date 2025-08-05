@@ -10,8 +10,10 @@ using Microsoft.Azure.Documents.Client;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Extensions.Logging;
-using PolyCloud.Storage.NetCore;
+using Microsoft.Azure.Storage;
+using Microsoft.Azure.Storage.Blob;
 using Newtonsoft.Json.Linq;
+using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 
 namespace WorldFactbookIndexer
 {
@@ -52,7 +54,7 @@ namespace WorldFactbookIndexer
 
         [FunctionName("Update_TimerStart")]
         public static async Task Update_TimerStart([TimerTrigger(EverySaturday)]TimerInfo timerInfo,
-            [OrchestrationClient] DurableOrchestrationClient starter, ILogger log)
+            [DurableClient] IDurableOrchestrationClient starter, ILogger log)
         {
             string instanceId = await starter.StartNewAsync("Update", null);
             log.LogInformation($"================ Started orchestration with ID = '{instanceId}'. at " + DateTime.Now.ToString());
@@ -64,7 +66,7 @@ namespace WorldFactbookIndexer
         [FunctionName("Update_HttpStart")]
         public static async Task<HttpResponseMessage> HttpStart(
             [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")]HttpRequestMessage req,
-            [OrchestrationClient]DurableOrchestrationClient starter,
+            [DurableClient]IDurableOrchestrationClient starter,
             ILogger log)
         {
             // Function input comes from the request content.
@@ -83,9 +85,9 @@ namespace WorldFactbookIndexer
         // Update : Azure Durable Function for loading/updating Azure storage and database with World Factbook data
 
         [FunctionName("Update")]
-        public static async Task<List<bool>> RunOrchestrator([OrchestrationTrigger] DurableOrchestrationContext context)
+        public static async Task<List<bool>> RunOrchestrator([OrchestrationTrigger] IDurableOrchestrationContext context)
         {
-            DurableOrchestrationContext Context = context;
+            IDurableOrchestrationContext Context = context;
 
             var outputs = new List<bool>();
 
@@ -214,11 +216,14 @@ namespace WorldFactbookIndexer
 
                 File.WriteAllText(filename, json);
 
-                using (Storage storage = Storage.Azure(StorageName, StorageKey))
+                // Upload to Azure Storage
+                CloudStorageAccount storageAccount = CloudStorageAccount.Parse($"DefaultEndpointsProtocol=https;AccountName={StorageName};AccountKey={StorageKey}");
+                CloudBlobClient blobClient = storageAccount.CreateCloudBlobClient();
+                CloudBlobContainer container = blobClient.GetContainerReference(ContainerName);
+                CloudBlockBlob blockBlob = container.GetBlockBlobReference(filename);
+using (var fileStream = File.OpenRead(filename))
                 {
-                    storage.Open();
-                    storage.UploadFile("data", filename);
-                    storage.Close();
+                    blockBlob.UploadFromStream(fileStream);
                 }
 
                 DeleteTempFile(filename);
@@ -385,41 +390,42 @@ namespace WorldFactbookIndexer
 
         private static bool UploadCountryData_UploadFlagImage(ILogger log, Country country)
         {
-            using (Storage storage = Storage.Azure(StorageName, StorageKey))
+            String flagUrl = String.Format(FlagUrlFormat, country.Code.ToUpper());
+            String flagFilename = country.Key + ".gif";
+
+            try
             {
-                String flagUrl = String.Format(FlagUrlFormat, country.Code.ToUpper());
-                String flagFilename = country.Key + ".gif";
+                // Check if file exists in blob storage
+                CloudStorageAccount storageAccount = CloudStorageAccount.Parse($"DefaultEndpointsProtocol=https;AccountName={StorageName};AccountKey={StorageKey}");
+                CloudBlobClient blobClient = storageAccount.CreateCloudBlobClient();
+                CloudBlobContainer container = blobClient.GetContainerReference(ContainerName);
+                CloudBlockBlob blockBlob = container.GetBlockBlobReference(flagFilename);
 
-                if (!storage.FileExists(ContainerName, flagFilename))
+                if (!blockBlob.Exists())
                 {
-                    try
+                    // Download flag image file
+                    log.LogInformation($"Downloading country flag from " + flagUrl);
+using (WebClient web = new WebClient())
                     {
-                        // Download flag image file
-
-                        log.LogInformation($"Downloading country flag from " + flagUrl);
-                        using (WebClient web = new WebClient())
-                        {
-                            web.DownloadFile(flagUrl, flagFilename);
-                        }
-
-                        // Upload to blob storage
-
-                        log.LogInformation($"Uploading country flag to blob " + flagFilename);
-
-                        storage.Open();
-                        storage.UploadFile("data", flagFilename);
-                        storage.Close();
-
-                        DeleteTempFile(flagFilename);
+                        web.DownloadFile(flagUrl, flagFilename);
                     }
-                    catch (Exception ex)
+
+                    // Upload to blob storage
+                    log.LogInformation($"Uploading country flag to blob " + flagFilename);
+using (var fileStream = File.OpenRead(flagFilename))
                     {
-                        // Flag image not available
-                        log.LogError(ex, "UploadCountryData(" + country.Key + ").download-flag failed");
-                        return false;
+                        blockBlob.UploadFromStream(fileStream);
                     }
+
+                    DeleteTempFile(flagFilename);
                 }
                 return true;
+            }
+            catch (Exception ex)
+            {
+                // Flag image not available
+                log.LogError(ex, "UploadCountryData(" + country.Key + ").download-flag failed");
+                return false;
             }
         }
 
@@ -431,41 +437,42 @@ namespace WorldFactbookIndexer
 
         private static bool UploadCountryData_UploadMapImage(ILogger log, Country country)
         {
-            using (Storage storage = Storage.Azure(StorageName, StorageKey))
+            String mapUrl = String.Format(MapUrlFormat, country.Code.ToUpper());
+            String mapFilename = country.Key + "-map.gif";
+
+            try
             {
-                String mapUrl = String.Format(MapUrlFormat, country.Code.ToUpper());
-                String mapFilename = country.Key + "-map.gif";
+                // Check if file exists in blob storage
+                CloudStorageAccount storageAccount = CloudStorageAccount.Parse($"DefaultEndpointsProtocol=https;AccountName={StorageName};AccountKey={StorageKey}");
+                CloudBlobClient blobClient = storageAccount.CreateCloudBlobClient();
+                CloudBlobContainer container = blobClient.GetContainerReference(ContainerName);
+                CloudBlockBlob blockBlob = container.GetBlockBlobReference(mapFilename);
 
-                if (!storage.FileExists(ContainerName, mapFilename))
+                if (!blockBlob.Exists())
                 {
-                    try
+                    // Download map image file
+                    log.LogInformation($"Downloading country map from " + mapUrl);
+using (WebClient web = new WebClient())
                     {
-                        // Download flag image file
-
-                        log.LogInformation($"Downloading country map from " + mapUrl);
-                        using (WebClient web = new WebClient())
-                        {
-                            web.DownloadFile(mapUrl, mapFilename);
-                        }
-
-                        // Upload to storage
-
-                        log.LogInformation($"Uploading country map to blob " + mapFilename);
-
-                        storage.Open();
-                        storage.UploadFile("data", mapFilename);
-                        storage.Close();
-
-                        DeleteTempFile(mapFilename);
+                        web.DownloadFile(mapUrl, mapFilename);
                     }
-                    catch (Exception ex)
+
+                    // Upload to blob storage
+                    log.LogInformation($"Uploading country map to blob " + mapFilename);
+using (var fileStream = File.OpenRead(mapFilename))
                     {
-                        // Map image not available
-                        log.LogError(ex, "UploadCountryData(" + country.Key + ").download-map failed");
-                        return false;
+                        blockBlob.UploadFromStream(fileStream);
                     }
+
+                    DeleteTempFile(mapFilename);
                 }
                 return true;
+            }
+            catch (Exception ex)
+            {
+                // Map image not available
+                log.LogError(ex, "UploadCountryData(" + country.Key + ").download-map failed");
+                return false;
             }
         }
 
