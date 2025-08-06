@@ -1,0 +1,320 @@
+# Copyright 2025 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: 'Template to create IAM roles and instance profile with SSM permissions'
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Description: 'Existing S3 bucket used to store application binary. If provided, will skip creation.'
+    Default: ''
+
+  KMSKeyArn:
+    Type: String
+    Description: 'Optional KMS Key ARN for encryption/decryption permissions'
+    Default: ''
+
+Conditions:
+  HasKMSKey: !Not [!Equals [!Ref KMSKeyArn, '']]
+  CreateS3Bucket: !Equals [!Ref S3BucketName, '']
+
+Resources:
+  # S3 Bucket (created if none provided)
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateS3Bucket
+    Properties:
+      BucketName: !Sub 'aws-transform-deployment-bucket-${AWS::AccountId}-${AWS::Region}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: CreatedFor
+          Value: AWSTransformDotNET
+
+  # EC2 Instance Profile and Role with SSM permissions
+  EC2InstanceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: 'AWSTransformDotNET-EC2-Instance-Role'
+      Tags:
+        - Key: CreatedFor
+          Value: AWSTransformDotNET
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Policies:
+        - PolicyName: S3GetObjectAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 
+                    - 'arn:aws:s3:::${BucketName}'
+                    - BucketName: !If [CreateS3Bucket, !Ref S3Bucket, !Ref S3BucketName]
+                  - !Sub 
+                    - 'arn:aws:s3:::${BucketName}/*'
+                    - BucketName: !If [CreateS3Bucket, !Ref S3Bucket, !Ref S3BucketName]
+        - !If
+          - HasKMSKey
+          - PolicyName: KMSAccess
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 'kms:Decrypt'
+                    - 'kms:GenerateDataKey'
+                  Resource: !Ref KMSKeyArn
+          - !Ref AWS::NoValue
+
+  EC2InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      InstanceProfileName: 'AWSTransformDotNET-EC2-Instance-Profile'
+      Roles:
+        - !Ref EC2InstanceRole
+
+  # Infra Deployment Role
+  InfraDeploymentRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: 'AWSTransformDotNET-Infra-Deployment-Role'
+      Tags:
+        - Key: CreatedFor
+          Value: AWSTransformDotNET
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: InfraDeploymentPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'cloudformation:DescribeStacks'
+                  - 'cloudformation:DescribeStackEvents'
+                Resource:
+                  - 'arn:aws:cloudformation:*:*:stack/*'
+              - Effect: Allow
+                Action:
+                  - 'cloudformation:CreateStack'
+                  - 'cloudformation:UpdateStack'
+                Resource: 'arn:aws:cloudformation:*:*:stack/*'
+                Condition:
+                  StringEquals:
+                    'aws:RequestTag/CreatedFor': 'AWSTransformDotNET'
+              - Effect: Allow
+                Action:
+                  - 'ec2:DescribeVpcs'
+                  - 'ec2:DescribeSubnets'
+                  - 'ec2:DescribeSecurityGroups'
+                  - 'ec2:DescribeImages'
+                  - 'ec2:DescribeInstances'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'ec2:RunInstances'
+                  - 'ec2:CreateTags'
+                Resource: 'arn:aws:ec2:*:*:instance/*'
+                Condition:
+                  ForAnyValue:StringEquals:
+                    'aws:CalledVia': 'cloudformation.amazonaws.com'
+              - Effect: Allow
+                Action:
+                  - 'ec2:RunInstances'
+                Resource:
+                  - 'arn:aws:ec2:*::image/*'
+                Condition:
+                  ForAnyValue:StringEquals:
+                    'aws:CalledVia': 'cloudformation.amazonaws.com'
+                  StringEquals:
+                    'ec2:Owner': 'amazon'
+              - Effect: Allow
+                Action:
+                  - 'ec2:RunInstances'
+                Resource:
+                  - 'arn:aws:ec2:*:*:network-interface/*'
+                  - 'arn:aws:ec2:*:*:subnet/*'
+                  - 'arn:aws:ec2:*:*:security-group/*'
+                  - 'arn:aws:ec2:*:*:volume/*'
+                Condition:
+                  ForAnyValue:StringEquals:
+                    'aws:CalledVia': 'cloudformation.amazonaws.com'
+              - Effect: Allow
+                Action:
+                  - 'iam:GetRole'
+                  - 'iam:GetInstanceProfile'
+                Resource:
+                  - 'arn:aws:iam::*:role/*'
+                  - 'arn:aws:iam::*:instance-profile/*'
+                Condition:
+                  StringEquals:
+                    'iam:ResourceTag/CreatedFor': 'AWSTransformDotNET'
+              - Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                Resource:
+                  - 'arn:aws:iam::*:role/AWSTransformDotNET-*'
+                Condition:
+                  StringEquals:
+                    'iam:PassedToService': 'ec2.amazonaws.com'
+              - Effect: Allow
+                Action:
+                  - 'ssm:GetParameters'
+                Resource: 'arn:aws:ssm:*:*:parameter/aws/service/ami-amazon-linux-latest*'
+              - Effect: Allow
+                Action:
+                  - 'cloudformation:DeleteStack'
+                Resource:
+                  - 'arn:aws:cloudformation:*:*:stack/*'
+                Condition:
+                  StringEquals:
+                    'aws:ResourceTag/CreatedFor': 'AWSTransformDotNET'
+              - Effect: Allow
+                Action:
+                  - 'ec2:TerminateInstances'
+                Resource: 'arn:aws:ec2:*:*:instance/*'
+                Condition:
+                  ForAnyValue:StringEquals:
+                    'aws:CalledVia': 'cloudformation.amazonaws.com'
+                  StringEquals:
+                    'ec2:ResourceTag/CreatedFor': 'AWSTransformDotNET'
+
+  # Application Deployment Role
+  AppDeploymentRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: 'AWSTransformDotNET-Application-Deployment-Role'
+      Tags:
+        - Key: CreatedFor
+          Value: AWSTransformDotNET
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: AppDeploymentPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ssm:SendCommand'
+                Resource:
+                  - 'arn:aws:ec2:*:*:instance/*'
+                  - 'arn:aws:ssm:us-east-1::document/AWS-RunRemoteScript'
+              - Effect: Allow
+                Action:
+                  - 'ssm:DescribeInstanceInformation'
+                  - 'ssm:SendCommand'
+                  - 'ssm:ListCommandInvocations'
+                  - 'ssm:GetCommandInvocation'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'ec2:DescribeInstances'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'ssm:GetParameter'
+                  - 'ssm:GetParameters'
+                Resource: 
+                  - 'arn:aws:ssm:*:*:parameter/aws/service/ami-amazon-linux-latest*'
+                  - 'arn:aws:ssm:*:*:parameter/transform/bucket-name'
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                  - 's3:CreateBucket'
+                  - 's3:PutBucketTagging'
+                  - 's3:PutEncryptionConfiguration'
+                  - 's3:PutBucketVersioning'
+                  - 's3:GetBucketLocation'
+                Resource:
+                  - !Sub
+                    - 'arn:aws:s3:::${BucketName}'
+                    - BucketName: !If [CreateS3Bucket, !Ref S3Bucket, !Ref S3BucketName]
+                  - !Sub
+                    - 'arn:aws:s3:::${BucketName}/*'
+                    - BucketName: !If [CreateS3Bucket, !Ref S3Bucket, !Ref S3BucketName]
+              - Effect: Allow
+                Action:
+                  - 'ssm:GetParameter'
+                  - 'ssm:GetParameters'
+                Resource: 'arn:aws:ssm:*:*:parameter/aws/service/ami-amazon-linux-latest*'
+        - !If
+          - HasKMSKey
+          - PolicyName: KMSAccess
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 'kms:GenerateDataKey'
+                    - 'kms:Decrypt'
+                  Resource: !Ref KMSKeyArn
+          - !Ref AWS::NoValue
+
+  # SSM Parameters
+  BucketNameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: '/transform/bucket-name'
+      Type: String
+      Value: !If [CreateS3Bucket, !Ref S3Bucket, !Ref S3BucketName]
+      Description: 'Name of the S3 bucket used for AWS Transform deployments'
+      Tier: Standard
+
+Outputs:
+  S3BucketName:
+    Description: Name of the S3 bucket used for deployments
+    Value: !If [CreateS3Bucket, !Ref S3Bucket, !Ref S3BucketName]
+    Condition: CreateS3Bucket
+
+  EC2InstanceRoleArn:
+    Description: ARN of the EC2 instance role
+    Value: !GetAtt EC2InstanceRole.Arn
+
+  EC2InstanceProfileArn:
+    Description: ARN of the EC2 instance profile
+    Value: !GetAtt EC2InstanceProfile.Arn
+
+  EC2InstanceProfileName:
+    Description: Name of the EC2 instance profile
+    Value: !Ref EC2InstanceProfile
+
+  InfraDeploymentRoleArn:
+    Description: ARN of the infrastructure deployment role
+    Value: !GetAtt InfraDeploymentRole.Arn
+
+  AppDeploymentRoleArn:
+    Description: ARN of the application deployment role
+    Value: !GetAtt AppDeploymentRole.Arn
+
+  BucketNameParameterArn:
+    Description: ARN of the SSM parameter storing the bucket name
+    Value: !Ref BucketNameParameter
